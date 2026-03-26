@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Cyber-Hand: Ultimate Studio Fixed</title>
+    <title>Cyber-Hand: Dual Hand Studio</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -48,9 +48,9 @@
     <canvas id="canvas_hand"></canvas>
 
     <div class="ui-info">
-        SYSTEM: AIR-TOUCH ACTIVE<br>
+        SYSTEM: DUAL-HAND ACTIVE<br>
         TOOL: <span id="ui_tool">PENCIL</span> <span id="color_box" class="color-indicator"></span><br>
-        STATE: <span id="ui_state">IDLE</span>
+        HANDS: <span id="ui_hands">0</span>
     </div>
 
     <div class="controls">
@@ -77,7 +77,11 @@
         let hoverStart = 0;
         const HOVER_TIME = 800; 
 
-        let state = { lastX: 0, lastY: 0, curX: 0, curY: 0, mode: 'idle', currentPath: null };
+        // Храним состояния для каждой руки (по индексу)
+        let handsState = [
+            { lastX: 0, lastY: 0, curX: 0, curY: 0, mode: 'idle', currentPath: null },
+            { lastX: 0, lastY: 0, curX: 0, curY: 0, mode: 'idle', currentPath: null }
+        ];
 
         function resize() {
             canvasDraw.width = canvasHand.width = window.innerWidth;
@@ -89,79 +93,96 @@
         function onResults(results) {
             ctxHand.clearRect(0, 0, canvasHand.width, canvasHand.height);
             document.getElementById('color_box').style.background = colors[colorIdx];
+            
+            const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+            document.getElementById('ui_hands').innerText = numHands;
 
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0];
-                
-                const rawX = landmarks[8].x * canvasHand.width;
-                const screenY = landmarks[8].y * canvasHand.height;
-                const uiX = canvasHand.width - rawX; 
-                
-                state.curX += (rawX - state.curX) * 0.5;
-                state.curY += (screenY - state.curY) * 0.5;
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    if (index > 1) return; // Поддерживаем только 2 руки
+                    
+                    let s = handsState[index];
+                    const rawX = landmarks[8].x * canvasHand.width;
+                    const screenY = landmarks[8].y * canvasHand.height;
+                    const uiX = canvasHand.width - rawX; 
+                    
+                    s.curX += (rawX - s.curX) * 0.5;
+                    s.curY += (screenY - s.curY) * 0.5;
 
-                const thumbUp = landmarks[4].x < landmarks[3].x; 
-                const isIndex = landmarks[8].y < landmarks[6].y;
-                const isMiddle = landmarks[12].y < landmarks[10].y;
-                const isRing = landmarks[16].y < landmarks[14].y;
-                const isPinky = landmarks[20].y < landmarks[18].y;
+                    const thumbUp = landmarks[4].x < landmarks[3].x; 
+                    const isIndex = landmarks[8].y < landmarks[6].y;
+                    const isMiddle = landmarks[12].y < landmarks[10].y;
+                    const isRing = landmarks[16].y < landmarks[14].y;
+                    const isPinky = landmarks[20].y < landmarks[18].y;
 
-                const gestureMove = isIndex && isMiddle && isRing && !isPinky;
-                const gestureColor = isIndex && isMiddle && !isRing && !thumbUp;
-                const isPaused = thumbUp && isIndex && !isMiddle && !isRing;
+                    const gestureMove = isIndex && isMiddle && isRing && !isPinky;
+                    const gestureColor = isIndex && isMiddle && !isRing && !thumbUp;
+                    const isPaused = thumbUp && isIndex && !isMiddle && !isRing;
 
-                // 1. СМЕНА ЦВЕТА
-                if (currentTool === 'pencil' && gestureColor && !colorCooldown) {
-                    colorIdx = (colorIdx + 1) % colors.length;
-                    colorCooldown = true;
-                    setTimeout(() => colorCooldown = false, 500);
-                }
-
-                // 2. ЛОГИКА СОСТОЯНИЙ (Исправлено для предотвращения склеек)
-                if (gestureMove) {
-                    if (state.mode === 'move') {
-                        globalOffset.x += (state.curX - state.lastX);
-                        globalOffset.y += (state.curY - state.lastY);
+                    // 1. Смена цвета (любой рукой)
+                    if (currentTool === 'pencil' && gestureColor && !colorCooldown) {
+                        colorIdx = (colorIdx + 1) % colors.length;
+                        colorCooldown = true;
+                        setTimeout(() => colorCooldown = false, 500);
                     }
-                    state.mode = 'move';
-                    state.currentPath = null; // Рвем линию при перемещении
-                    document.getElementById('ui_state').innerText = "PANNING";
-                } 
-                else if (isPaused) {
-                    checkAirTouch(uiX, screenY);
-                    state.mode = 'idle';
-                    state.currentPath = null; // Рвем линию при заглушке
-                    document.getElementById('ui_state').innerHTML = "<span class='status-wait'>PAUSED / MENU</span>";
-                }
-                else if (isIndex && !isMiddle && !thumbUp) {
-                    if (state.mode !== 'action' || !state.currentPath) {
-                        state.currentPath = { 
-                            points: [], 
-                            color: colors[colorIdx], 
-                            isEraser: (currentTool === 'eraser'),
-                            size: (currentTool === 'eraser') ? 80 : 6
-                        };
-                        allPaths.push(state.currentPath);
+
+                    // 2. Логика
+                    if (gestureMove) {
+                        if (s.mode === 'move') {
+                            globalOffset.x += (s.curX - s.lastX);
+                            globalOffset.y += (s.curY - s.lastY);
+                        }
+                        s.mode = 'move';
+                        s.currentPath = null;
+                    } 
+                    else if (isPaused) {
+                        checkAirTouch(uiX, screenY);
+                        s.mode = 'idle';
+                        s.currentPath = null;
                     }
-                    state.currentPath.points.push({ x: state.curX - globalOffset.x, y: state.curY - globalOffset.y });
-                    state.mode = 'action';
-                    document.getElementById('ui_state').innerText = "ACTIVE";
-                } else {
-                    state.mode = 'idle';
-                    state.currentPath = null; // Рвем линию во всех остальных случаях
-                    document.getElementById('ui_state').innerText = "IDLE";
-                }
+                    else if (isIndex && !isMiddle && !thumbUp) {
+                        if (s.mode !== 'action' || !s.currentPath) {
+                            s.currentPath = { 
+                                points: [], 
+                                color: colors[colorIdx], 
+                                isEraser: (currentTool === 'eraser'),
+                                size: (currentTool === 'eraser') ? 80 : 6
+                            };
+                            allPaths.push(s.currentPath);
+                        }
+                        s.currentPath.points.push({ x: s.curX - globalOffset.x, y: s.curY - globalOffset.y });
+                        s.mode = 'action';
+                    } else {
+                        s.mode = 'idle';
+                        s.currentPath = null;
+                    }
 
-                // ВИЗУАЛИЗАЦИЯ
-                let handColor = gestureMove ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
-                drawConnectors(ctxHand, landmarks, HAND_CONNECTIONS, { color: handColor, lineWidth: 2 });
-                drawLandmarks(ctxHand, landmarks, { color: handColor, radius: 2 });
+                    // Визуализация руки
+                    let handColor = gestureMove ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
+                    drawConnectors(ctxHand, landmarks, HAND_CONNECTIONS, { color: handColor, lineWidth: 2 });
+                    drawLandmarks(ctxHand, landmarks, { color: handColor, radius: 2 });
 
-                state.lastX = state.curX;
-                state.lastY = state.curY;
-            } else {
-                resetAirTouch();
+                    if (currentTool === 'eraser' && s.mode === 'action') {
+                        ctxHand.beginPath();
+                        ctxHand.arc(s.curX, s.curY, 40, 0, Math.PI * 2);
+                        ctxHand.strokeStyle = 'rgba(255, 51, 102, 0.6)';
+                        ctxHand.stroke();
+                    }
+
+                    s.lastX = s.curX;
+                    s.lastY = s.curY;
+                });
             }
+
+            // Если рук нет или ни одна не в режиме паузы - сбрасываем кнопки
+            let anyHandPaused = false;
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((lm, i) => {
+                    if (lm[4].x < lm[3].x && lm[8].y < lm[6].y && lm[12].y > lm[10].y) anyHandPaused = true;
+                });
+            }
+            if (!anyHandPaused) resetAirTouch();
+
             render();
         }
 
@@ -213,17 +234,13 @@
                 ctxDraw.stroke();
             });
             ctxDraw.restore();
-            if (currentTool === 'eraser' && state.mode !== 'move') {
-                ctxHand.beginPath();
-                ctxHand.arc(state.curX, state.curY, 40, 0, Math.PI * 2);
-                ctxHand.strokeStyle = 'rgba(255, 51, 102, 0.6)';
-                ctxHand.stroke();
-            }
         }
 
         const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-        hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        // УСТАНАВЛИВАЕМ 2 РУКИ
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
         hands.onResults(onResults);
+        
         new Camera(videoElement, {
             onFrame: async () => { await hands.send({image: videoElement}); },
             width: 640, height: 480
