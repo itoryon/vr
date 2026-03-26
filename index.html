@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Cyber-Hand: Dual Hand Studio Fixed</title>
+    <title>Cyber-Hand: Dual Hand Master Studio</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -37,7 +37,8 @@
             background: rgba(0, 15, 5, 0.8); padding: 10px; border: 1px solid #00ff88;
             font-size: 11px; min-width: 180px;
         }
-        .status-wait { color: #ffaa00; font-weight: bold; }
+        .status-tag { padding: 2px 5px; border-radius: 3px; font-weight: bold; margin-left: 5px; }
+        .panning-ui { background: #ffff00; color: #000; }
         .color-indicator { width: 15px; height: 15px; border: 1px solid #fff; display: inline-block; vertical-align: middle; margin-left: 5px; }
     </style>
 </head>
@@ -48,9 +49,10 @@
     <canvas id="canvas_hand"></canvas>
 
     <div class="ui-info">
-        SYSTEM: DUAL-HAND STUDIO v1.1<br>
+        SYSTEM: DUAL-HAND PRO<br>
         TOOL: <span id="ui_tool">PENCIL</span> <span id="color_box" class="color-indicator"></span><br>
-        HANDS: <span id="ui_hands">0</span>
+        HANDS: <span id="ui_hands">0</span><br>
+        STATE: <span id="ui_state">IDLE</span>
     </div>
 
     <div class="controls">
@@ -96,17 +98,16 @@
             const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
             document.getElementById('ui_hands').innerText = numHands;
 
-            // Флаг для сброса кнопок, если ни одна рука не в паузе
-            let anyHandPaused = false;
+            let isAnyHandPausing = false;
+            let isAnyHandPanning = false;
 
             if (results.multiHandLandmarks && results.multiHandedness) {
                 results.multiHandLandmarks.forEach((landmarks, index) => {
-                    if (index > 1) return; // Поддерживаем только 2 руки
+                    if (index > 1) return;
                     
-                    // Получаем информацию о том, левая это рука или правая
                     const handedness = results.multiHandedness[index].label;
-                    
                     let s = handsState[index];
+                    
                     const rawX = landmarks[8].x * canvasHand.width;
                     const screenY = landmarks[8].y * canvasHand.height;
                     const uiX = canvasHand.width - rawX; 
@@ -114,47 +115,37 @@
                     s.curX += (rawX - s.curX) * 0.5;
                     s.curY += (screenY - s.curY) * 0.5;
 
-                    // Учитываем инверсию X при scaleX(-1) для определения, поднят ли палец
-                    // true, если палец оттопырен в сторону (выпрямлен)
-                    const isThumbUp = (handedness === 'Right') ? 
-                        (landmarks[4].x < landmarks[3].x) : // Правая рука
-                        (landmarks[4].x > landmarks[3].x);   // Левая рука (инверсия)
+                    [span_5](start_span)// Определение жестов с учетом зеркальности[span_5](end_span)
+                    const isThumbOut = (handedness === 'Right') ? 
+                        (landmarks[4].x < landmarks[3].x) : 
+                        (landmarks[4].x > landmarks[3].x);
 
-                    const isIndex = landmarks[8].y < landmarks[6].y;
-                    const isMiddle = landmarks[12].y < landmarks[10].y;
-                    const isRing = landmarks[16].y < landmarks[14].y;
-                    const isPinky = landmarks[20].y < landmarks[18].y;
+                    const isIndexUp = landmarks[8].y < landmarks[6].y;
+                    const isMiddleUp = landmarks[12].y < landmarks[10].y;
+                    const isRingUp = landmarks[16].y < landmarks[14].y;
+                    const isPinkyUp = landmarks[20].y < landmarks[18].y;
 
-                    const gestureMove = isIndex && isMiddle && isRing && !isPinky;
-                    const gestureColor = isIndex && isMiddle && !isRing && !isThumbUp;
-                    
-                    // РЕЖИМ ЗАГЛУШКИ (Пауза/Курсор): Указательный + Большой отогнут
-                    const isPaused = isThumbUp && isIndex && !isMiddle && !isRing;
+                    // ЖЕСТЫ
+                    const isFist = !isThumbOut && !isIndexUp && !isMiddleUp && !isRingUp && !isPinkyUp;
+                    const isPaused = isThumbOut && isIndexUp && !isMiddleUp; [span_6](start_span)// Указательный вверх + большой в сторону[span_6](end_span)
+                    const isDrawing = isIndexUp && !isMiddleUp && !isThumbOut;
 
-                    // 1. Смена цвета (любой рукой)
-                    if (currentTool === 'pencil' && gestureColor && !colorCooldown) {
-                        colorIdx = (colorIdx + 1) % colors.length;
-                        colorCooldown = true;
-                        setTimeout(() => colorCooldown = false, 500);
-                    }
-
-                    // 2. Логика
-                    if (gestureMove) {
+                    if (isFist) {
                         if (s.mode === 'move') {
                             globalOffset.x += (s.curX - s.lastX);
                             globalOffset.y += (s.curY - s.lastY);
                         }
                         s.mode = 'move';
                         s.currentPath = null;
+                        isAnyHandPanning = true;
                     } 
                     else if (isPaused) {
-                        anyHandPaused = true;
+                        isAnyHandPausing = true;
                         checkAirTouch(uiX, screenY);
                         s.mode = 'idle';
                         s.currentPath = null;
                     }
-                    else if (isIndex && !isMiddle && !isThumbUp) {
-                        // Рисовать можно только если большой палец ПРИЖАТ (не isThumbUp)
+                    else if (isDrawing) {
                         if (s.mode !== 'action' || !s.currentPath) {
                             s.currentPath = { 
                                 points: [], 
@@ -171,16 +162,17 @@
                         s.currentPath = null;
                     }
 
-                    // Визуализация руки
-                    let handColor = gestureMove ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
+                    [span_7](start_span)// Визуализация[span_7](end_span)
+                    let handColor = isFist ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
                     drawConnectors(ctxHand, landmarks, HAND_CONNECTIONS, { color: handColor, lineWidth: 2 });
-                    drawLandmarks(ctxHand, landmarks, { color: handColor, radius: 2 });
-
-                    if (currentTool === 'eraser' && s.mode === 'action') {
+                    
+                    if (isFist) {
                         ctxHand.beginPath();
-                        ctxHand.arc(s.curX, s.curY, 40, 0, Math.PI * 2);
-                        ctxHand.strokeStyle = 'rgba(255, 51, 102, 0.6)';
+                        ctxHand.arc(landmarks[9].x * canvasHand.width, landmarks[9].y * canvasHand.height, 15, 0, Math.PI * 2);
+                        ctxHand.strokeStyle = '#ffff00';
                         ctxHand.stroke();
+                    } else {
+                        drawLandmarks(ctxHand, landmarks, { color: handColor, radius: 2 });
                     }
 
                     s.lastX = s.curX;
@@ -188,8 +180,14 @@
                 });
             }
 
-            // Если рук нет или ни одна не в режиме паузы - сбрасываем кнопки
-            if (!anyHandPaused) resetAirTouch();
+            [span_8](start_span)// Умный сброс меню[span_8](end_span)
+            if (!isAnyHandPausing) resetAirTouch();
+
+            [span_9](start_span)// Обновление статуса в UI[span_9](end_span)
+            const statusEl = document.getElementById('ui_state');
+            if (isAnyHandPanning) statusEl.innerHTML = "PANNING <span class='status-tag panning-ui'>FIST</span>";
+            else if (isAnyHandPausing) statusEl.innerText = "MENU MODE";
+            else statusEl.innerText = numHands > 0 ? "ACTIVE" : "IDLE";
 
             render();
         }
@@ -212,7 +210,6 @@
         function resetAirTouch() {
             hoverTarget = null;
             document.querySelectorAll('.progress').forEach(p => p.style.width = '0%');
-            document.querySelectorAll('.air-btn').forEach(b => b.classList.remove('hover'));
         }
 
         function executeAction(action) {
