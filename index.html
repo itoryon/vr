@@ -2,6 +2,277 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <title>Cyber-Hand: Dual Hand Master Studio v2.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'JetBrains Mono', monospace; color: #00ff88; }
+        #input_video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #canvas_hand { z-index: 10; pointer-events: none; }
+        #canvas_draw { z-index: 5; }
+        
+        .controls {
+            position: fixed; top: 20px; right: 20px; z-index: 30;
+            display: flex; flex-direction: column; gap: 15px;
+        }
+        .air-btn {
+            background: rgba(0, 30, 15, 0.8); border: 2px solid #00ff88;
+            color: #00ff88; width: 160px; height: 50px;
+            display: flex; align-items: center; justify-content: center;
+            text-transform: uppercase; font-size: 11px; position: relative;
+            overflow: hidden; transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .air-btn.active { background: #00ff88; color: #000; box-shadow: 0 0 20px #00ff88; }
+        .air-btn.hover { transform: scale(1.1); border-color: #fff; }
+        
+        .progress {
+            position: absolute; bottom: 0; left: 0; height: 4px;
+            background: #fff; width: 0%; transition: width 0.1s linear;
+        }
+
+        .ui-info {
+            position: fixed; top: 20px; left: 20px; z-index: 30;
+            background: rgba(0, 15, 5, 0.8); padding: 10px; border: 1px solid #00ff88;
+            font-size: 11px; min-width: 180px;
+        }
+        .status-tag { padding: 2px 5px; border-radius: 3px; font-weight: bold; margin-left: 5px; }
+        .panning-ui { background: #ffff00; color: #000; }
+        .color-indicator { width: 15px; height: 15px; border: 1px solid #fff; display: inline-block; vertical-align: middle; margin-left: 5px; }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline></video>
+    <canvas id="canvas_draw"></canvas>
+    <canvas id="canvas_hand"></canvas>
+
+    <div class="ui-info">
+        SYSTEM: DUAL-HAND PRO v2.0<br>
+        TOOL: <span id="ui_tool">PENCIL</span> <span id="color_box" class="color-indicator"></span><br>
+        HANDS: <span id="ui_hands">0</span><br>
+        STATE: <span id="ui_state">IDLE</span>
+    </div>
+
+    <div class="controls">
+        <div class="air-btn active" id="btn_pencil" data-tool="pencil">Кисть (1 палец)<div class="progress"></div></div>
+        <div class="air-btn" id="btn_eraser" data-tool="eraser">Ластик (MEGA)<div class="progress"></div></div>
+        <div class="air-btn" id="btn_clear" data-tool="clear" style="border-color: #ff3366; color: #ff3366;">Очистить всё<div class="progress"></div></div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasDraw = document.getElementById('canvas_draw');
+        const ctxDraw = canvasDraw.getContext('2d');
+        const canvasHand = document.getElementById('canvas_hand');
+        const ctxHand = canvasHand.getContext('2d');
+        
+        let currentTool = 'pencil';
+        let globalOffset = { x: 0, y: 0 };
+        let allPaths = [];
+        const colors = ['#00ff88', '#00d9ff', '#ff3366', '#ffff00', '#ffffff', '#ff8800'];
+        let colorIdx = 0;
+        let colorCooldown = false;
+
+        let hoverTarget = null;
+        let hoverStart = 0;
+        const HOVER_TIME = 800; 
+
+        let handsState = [
+            { lastX: 0, lastY: 0, curX: 0, curY: 0, mode: 'idle', currentPath: null },
+            { lastX: 0, lastY: 0, curX: 0, curY: 0, mode: 'idle', currentPath: null }
+        ];
+
+        function resize() {
+            canvasDraw.width = canvasHand.width = window.innerWidth;
+            canvasDraw.height = canvasHand.height = window.innerHeight;
+        }
+        window.onresize = resize;
+        resize();
+
+        function onResults(results) {
+            ctxHand.clearRect(0, 0, canvasHand.width, canvasHand.height);
+            document.getElementById('color_box').style.background = colors[colorIdx];
+            
+            const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+            document.getElementById('ui_hands').innerText = numHands;
+
+            let isAnyHandPausing = false;
+            let isAnyHandPanning = false;
+            let pauseX = 0, pauseY = 0; 
+
+            if (results.multiHandLandmarks && results.multiHandedness) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    if (index > 1) return;
+                    
+                    const handedness = results.multiHandedness[index].label;
+                    let s = handsState[index];
+                    
+                    const rawX = landmarks[8].x * canvasHand.width;
+                    const screenY = landmarks[8].y * canvasHand.height;
+                    const uiX = canvasHand.width - rawX; 
+                    
+                    s.curX += (rawX - s.curX) * 0.5;
+                    s.curY += (screenY - s.curY) * 0.5;
+
+                    const isThumbOut = (handedness === 'Right') ? 
+                        (landmarks[4].x < landmarks[3].x) : 
+                        (landmarks[4].x > landmarks[3].x);
+
+                    const isIndexUp = landmarks[8].y < landmarks[6].y;
+                    const isMiddleUp = landmarks[12].y < landmarks[10].y;
+                    const isRingUp = landmarks[16].y < landmarks[14].y;
+                    const isPinkyUp = landmarks[20].y < landmarks[18].y;
+
+                    const isFist = !isThumbOut && !isIndexUp && !isMiddleUp && !isRingUp && !isPinkyUp;
+                    const isPaused = isThumbOut && isIndexUp && !isMiddleUp; 
+                    const isDrawing = isIndexUp && !isMiddleUp && !isThumbOut;
+
+                    if (isFist) {
+                        if (s.mode === 'move') {
+                            globalOffset.x += (s.curX - s.lastX);
+                            globalOffset.y += (s.curY - s.lastY);
+                        }
+                        s.mode = 'move';
+                        s.currentPath = null;
+                        isAnyHandPanning = true;
+                    } 
+                    else if (isPaused) {
+                        isAnyHandPausing = true;
+                        pauseX = uiX; 
+                        pauseY = screenY;
+                        s.mode = 'idle';
+                        s.currentPath = null;
+                    }
+                    else if (isDrawing) {
+                        if (s.mode !== 'action' || !s.currentPath) {
+                            s.currentPath = { 
+                                points: [], 
+                                color: colors[colorIdx], 
+                                isEraser: (currentTool === 'eraser'),
+                                size: (currentTool === 'eraser') ? 80 : 6
+                            };
+                            allPaths.push(s.currentPath);
+                        }
+                        s.currentPath.points.push({ x: s.curX - globalOffset.x, y: s.curY - globalOffset.y });
+                        s.mode = 'action';
+                    } else {
+                        s.mode = 'idle';
+                        s.currentPath = null;
+                    }
+
+                    let handColor = isFist ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
+                    drawConnectors(ctxHand, landmarks, HAND_CONNECTIONS, { color: handColor, lineWidth: 2 });
+                    
+                    if (isFist) {
+                        ctxHand.beginPath();
+                        ctxHand.arc(landmarks[9].x * canvasHand.width, landmarks[9].y * canvasHand.height, 15, 0, Math.PI * 2);
+                        ctxHand.strokeStyle = '#ffff00';
+                        ctxHand.stroke();
+                    } else {
+                        drawLandmarks(ctxHand, landmarks, { color: handColor, radius: 2 });
+                    }
+
+                    s.lastX = s.curX;
+                    s.lastY = s.curY;
+                });
+            }
+
+            // Отработка нажатия кнопок: вызываем один раз за кадр
+            if (isAnyHandPausing) {
+                checkAirTouch(pauseX, pauseY);
+            } else {
+                resetAirTouch();
+            }
+
+            const statusEl = document.getElementById('ui_state');
+            if (isAnyHandPanning) statusEl.innerHTML = "PANNING <span class='status-tag panning-ui'>FIST</span>";
+            else if (isAnyHandPausing) statusEl.innerText = "MENU MODE";
+            else statusEl.innerText = numHands > 0 ? "ACTIVE" : "IDLE";
+
+            render();
+        }
+
+        function checkAirTouch(x, y) {
+            const btns = document.querySelectorAll('.air-btn');
+            let found = null;
+            btns.forEach(btn => {
+                const rect = btn.getBoundingClientRect();
+                if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                    found = btn;
+                }
+            });
+
+            if (found) {
+                if (hoverTarget !== found) {
+                    resetAirTouch(); 
+                    hoverTarget = found;
+                    hoverStart = Date.now();
+                    found.classList.add('hover');
+                }
+                const elapsed = Date.now() - hoverStart;
+                const progressWidth = Math.min((elapsed / HOVER_TIME) * 100, 100);
+                found.querySelector('.progress').style.width = progressWidth + '%';
+                
+                if (elapsed >= HOVER_TIME) {
+                    executeAction(found.dataset.tool);
+                    resetAirTouch(); 
+                }
+            } else {
+                resetAirTouch();
+            }
+        }
+
+        function resetAirTouch() {
+            hoverTarget = null;
+            document.querySelectorAll('.progress').forEach(p => p.style.width = '0%');
+            document.querySelectorAll('.air-btn').forEach(b => b.classList.remove('hover'));
+        }
+
+        function executeAction(action) {
+            if (action === 'clear') { allPaths = []; } 
+            else { 
+                currentTool = action; 
+                document.getElementById('btn_pencil').classList.toggle('active', action === 'pencil');
+                document.getElementById('btn_eraser').classList.toggle('active', action === 'eraser');
+                document.getElementById('ui_tool').innerText = action.toUpperCase();
+            }
+        }
+
+        function render() {
+            ctxDraw.fillStyle = '#000';
+            ctxDraw.fillRect(0, 0, canvasDraw.width, canvasDraw.height);
+            ctxDraw.save();
+            ctxDraw.translate(globalOffset.x, globalOffset.y);
+            allPaths.forEach(p => {
+                if (p.points.length < 2) return;
+                ctxDraw.globalCompositeOperation = p.isEraser ? 'destination-out' : 'source-over';
+                ctxDraw.strokeStyle = p.color;
+                ctxDraw.lineWidth = p.size;
+                ctxDraw.lineCap = 'round';
+                ctxDraw.beginPath();
+                ctxDraw.moveTo(p.points[0].x, p.points[0].y);
+                for (let i = 1; i < p.points.length; i++) ctxDraw.lineTo(p.points[i].x, p.points[i].y);
+                ctxDraw.stroke();
+            });
+            ctxDraw.restore();
+        }
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+        
+        new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        }).start();
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
     <title>Cyber-Hand: Dual Hand Master Studio</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
