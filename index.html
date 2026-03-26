@@ -115,7 +115,7 @@
                     s.curX += (rawX - s.curX) * 0.5;
                     s.curY += (screenY - s.curY) * 0.5;
 
-                    [span_5](start_span)// Определение жестов с учетом зеркальности[span_5](end_span)
+                    // Определение жестов с учетом зеркальности 
                     const isThumbOut = (handedness === 'Right') ? 
                         (landmarks[4].x < landmarks[3].x) : 
                         (landmarks[4].x > landmarks[3].x);
@@ -127,7 +127,7 @@
 
                     // ЖЕСТЫ
                     const isFist = !isThumbOut && !isIndexUp && !isMiddleUp && !isRingUp && !isPinkyUp;
-                    const isPaused = isThumbOut && isIndexUp && !isMiddleUp; [span_6](start_span)// Указательный вверх + большой в сторону[span_6](end_span)
+                    const isPaused = isThumbOut && isIndexUp && !isMiddleUp; // Указательный вверх + большой в сторону 
                     const isDrawing = isIndexUp && !isMiddleUp && !isThumbOut;
 
                     if (isFist) {
@@ -162,7 +162,7 @@
                         s.currentPath = null;
                     }
 
-                    [span_7](start_span)// Визуализация[span_7](end_span)
+                    // Визуализация 
                     let handColor = isFist ? '#ffff00' : (isPaused ? '#ffffff' : (currentTool === 'eraser' ? '#ff3366' : colors[colorIdx]));
                     drawConnectors(ctxHand, landmarks, HAND_CONNECTIONS, { color: handColor, lineWidth: 2 });
                     
@@ -180,10 +180,10 @@
                 });
             }
 
-            [span_8](start_span)// Умный сброс меню[span_8](end_span)
+            // Умный сброс меню 
             if (!isAnyHandPausing) resetAirTouch();
 
-            [span_9](start_span)// Обновление статуса в UI[span_9](end_span)
+            // Обновление статуса в UI 
             const statusEl = document.getElementById('ui_state');
             if (isAnyHandPanning) statusEl.innerHTML = "PANNING <span class='status-tag panning-ui'>FIST</span>";
             else if (isAnyHandPausing) statusEl.innerText = "MENU MODE";
